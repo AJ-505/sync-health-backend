@@ -8,6 +8,8 @@ from security import get_password_hash, verify_password, create_access_token
 from fastapi.middleware.cors import CORSMiddleware
 auth_router = APIRouter()
 @auth_router.post("/register")
+
+
 async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     # Check if username or email exists
     result = await db.execute(
