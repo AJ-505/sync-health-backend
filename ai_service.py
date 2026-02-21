@@ -13,10 +13,12 @@ from security import get_current_user
 
 ai_router = APIRouter()
 
-# ── OpenRouter config ────────────────────────────────────────────────────────
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = "openrouter/free"
+# ── Gemini config ───────────────────────────────────────────────────────────
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.0-flash:generateContent?key={key}"
+)
 
 # ── Request body ─────────────────────────────────────────────────────────────
 class AnalyseRequest(BaseModel):
@@ -25,47 +27,47 @@ class AnalyseRequest(BaseModel):
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 def _build_payload(system_instruction: str, user_message: str) -> dict:
-    """Build an OpenAI-compatible chat completions request body."""
+    """Build a Gemini generateContent request body."""
     return {
-        "model": OPENROUTER_MODEL,
-        "messages": [
-            {"role": "system", "content": system_instruction},
-            {"role": "user",   "content": user_message},
+        "system_instruction": {
+            "parts": [{"text": system_instruction}]
+        },
+        "contents": [
+            {"role": "user", "parts": [{"text": user_message}]}
         ],
-        "temperature": 0.0,
+        "generationConfig": {
+            "temperature": 0.0,
+        },
     }
 
 
 async def _call_ai(system_instruction: str, user_message: str) -> str:
-    """Call the OpenRouter API and return the raw text response."""
-    if not OPENROUTER_API_KEY:
+    """Call the Gemini API and return the raw text response."""
+    if not GEMINI_API_KEY:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="OPENROUTER_API_KEY is not configured in the environment.",
+            detail="GEMINI_API_KEY is not configured in the environment.",
         )
 
+    url = GEMINI_URL.format(key=GEMINI_API_KEY)
     payload = _build_payload(system_instruction, user_message)
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(OPENROUTER_URL, json=payload, headers=headers)
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(url, json=payload)
 
     if response.status_code != 200:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"OpenRouter API error {response.status_code}: {response.text}",
+            detail=f"Gemini API error {response.status_code}: {response.text}",
         )
 
     data = response.json()
     try:
-        return data["choices"][0]["message"]["content"].strip()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except (KeyError, IndexError) as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Unexpected OpenRouter response structure: {exc}",
+            detail=f"Unexpected Gemini response structure: {exc}",
         )
 
 
