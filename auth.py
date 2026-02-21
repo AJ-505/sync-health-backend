@@ -7,13 +7,6 @@ from models import DBUser, Org, HR
 from security import get_password_hash, verify_password, create_access_token
 from fastapi.middleware.cors import CORSMiddleware
 auth_router = APIRouter()
-auth_router.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 @auth_router.post("/register")
 async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     # Check if username or email exists
