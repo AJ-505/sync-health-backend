@@ -84,7 +84,7 @@ async def filter_employees(
         ]
     }
 
-@filter_router.get("/all")
+@filter_router.get("/employees/all")
 async def get_all_employees(
     db: AsyncSession = Depends(get_db),
     user_and_role: tuple = Depends(get_current_user)
