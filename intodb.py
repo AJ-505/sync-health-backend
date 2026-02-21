@@ -30,13 +30,58 @@ DATA_FILE = os.path.join(os.path.dirname(__file__), "data.json")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-def get_connection():
+def get_connection(retries: int = 5, base_delay: float = 3.0):
+    """
+    Connect to Postgres with retry logic.
+
+    Neon free-tier computes go to sleep when idle. The first connection
+    attempt during a cold-start will time out or be dropped. Retrying a few
+    times with a short delay lets the compute finish waking up.
+    """
+    import time
+
     db_url = DATABASE_URL
     if db_url:
+        # psycopg2 needs a plain postgresql:// scheme (not asyncpg)
         if db_url.startswith("postgresql+asyncpg://"):
             db_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
-        return psycopg2.connect(db_url)
-    return psycopg2.connect(**DB_CONFIG)
+
+        # Neon's pooler endpoint only accepts HTTP connections (serverless drivers).
+        # psycopg2 uses raw TCP, so we must use the direct (non-pooler) endpoint.
+        # Strip '-pooler' from the hostname if present.
+        db_url = db_url.replace("-pooler.", ".")
+
+        # Neon and most cloud providers require SSL
+        if "sslmode=" not in db_url:
+            separator = "&" if "?" in db_url else "?"
+            db_url = f"{db_url}{separator}sslmode=require"
+
+        # Add a per-attempt timeout so we fail fast and retry promptly
+        if "connect_timeout=" not in db_url:
+            separator = "&" if "?" in db_url else "?"
+            db_url = f"{db_url}{separator}connect_timeout=10"
+
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            if db_url:
+                conn = psycopg2.connect(db_url)
+            else:
+                conn = psycopg2.connect(**DB_CONFIG)
+            if attempt > 1:
+                print(f"  Connected on attempt {attempt}.")
+            return conn
+        except psycopg2.OperationalError as exc:
+            last_exc = exc
+            if attempt < retries:
+                delay = base_delay * attempt
+                print(f"  Connection attempt {attempt} failed — retrying in {delay:.0f}s …")
+                time.sleep(delay)
+            else:
+                print(f"  All {retries} connection attempts failed.")
+
+    raise last_exc
+
 
 
 def hash_password(plain: str) -> str:
@@ -77,8 +122,14 @@ def create_tables(cur):
             job_level     TEXT,
             location_city TEXT,
             marital_status TEXT,
-            health        JSONB
+            health        JSONB,
+            summary       TEXT
         );
+    """)
+
+    # Add summary column if it doesn't exist (for pre-existing databases)
+    cur.execute("""
+        ALTER TABLE employees ADD COLUMN IF NOT EXISTS summary TEXT;
     """)
 
 
@@ -114,8 +165,8 @@ def upsert_employee(cur, org_id: int, emp: dict):
     cur.execute("""
         INSERT INTO employees
             (org_id, employee_id, name, gender, dob, department, job_level,
-             location_city, marital_status, health)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             location_city, marital_status, health, summary)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (employee_id) DO UPDATE SET
             org_id         = EXCLUDED.org_id,
             name           = EXCLUDED.name,
@@ -125,7 +176,8 @@ def upsert_employee(cur, org_id: int, emp: dict):
             job_level      = EXCLUDED.job_level,
             location_city  = EXCLUDED.location_city,
             marital_status = EXCLUDED.marital_status,
-            health         = EXCLUDED.health;
+            health         = EXCLUDED.health,
+            summary        = EXCLUDED.summary;
     """, (
         org_id,
         emp["employee_id"],
@@ -137,6 +189,7 @@ def upsert_employee(cur, org_id: int, emp: dict):
         emp["location_city"],
         emp["marital_status"],
         Json(emp["health"]),
+        emp.get("summary"),
     ))
 
 
