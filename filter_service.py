@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, Float, cast
 from typing import Optional
 from database import get_db
-from models import Employee
+from models import Employee, HR
 import datetime
+from security import get_current_user
 
 filter_router = APIRouter()
 
@@ -18,9 +19,19 @@ async def filter_employees(
     weight: Optional[float] = Query(None, description="Exact weight in kg"),
     min_weight: Optional[float] = Query(None, description="Minimum weight in kg"),
     max_weight: Optional[float] = Query(None, description="Maximum weight in kg"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    user_and_role: tuple = Depends(get_current_user)
 ):
+    current_user, role = user_and_role
     query = select(Employee)
+    
+    # Isolate data so HR users only see their own organization's employees
+    if role == "hr":
+        query = query.where(Employee.org_id == current_user.org_id)
+    else:
+        # If there are other roles without org_id access, block them or handle accordingly
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only HR users can filter employees")
+
     
     # 1. Gender
     if gender:
@@ -58,4 +69,17 @@ async def filter_employees(
     result = await db.execute(query)
     employees = result.scalars().all()
     
-    return {"count": len(employees), "employees": [{"name": emp.name, "department": emp.department, "gender": emp.gender,"age": emp.dob.year if emp.dob else None} for emp in employees]}
+    from datetime import date
+    today = date.today()
+    return {
+        "count": len(employees), 
+        "employees": [
+            {
+                "name": emp.name, 
+                "department": emp.department, 
+                "gender": emp.gender,
+                "age": today.year - emp.dob.year - ((today.month, today.day) < (emp.dob.month, emp.dob.day)) if emp.dob else None
+            } 
+            for emp in employees
+        ]
+    }
