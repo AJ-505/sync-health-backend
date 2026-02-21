@@ -6,9 +6,15 @@ from database import get_db
 from models import Employee, HR
 import datetime
 from security import get_current_user
-
+from fastapi.middleware.cors import CORSMiddleware
 filter_router = APIRouter()
-
+filter_router.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 @filter_router.get("/employees")
 async def filter_employees(
     gender: Optional[str] = Query(None, description="Filter by gender (e.g., 'M', 'F')"),
