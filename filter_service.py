@@ -103,4 +103,3 @@ async def get_all_employees(
         "count": len(employees),
         "employees": employees
     }
-

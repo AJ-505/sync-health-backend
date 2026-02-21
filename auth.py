@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from database import get_db
@@ -33,7 +33,7 @@ async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     return {"message": "User registered successfully. Please verify your phone number via OTP."}
 
 @auth_router.post("/login", response_model=Token)
-async def login_user(request: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login_user(request: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
     user = None
     role = "user"
     identifier = ""
@@ -67,4 +67,25 @@ async def login_user(request: LoginRequest, db: AsyncSession = Depends(get_db)):
 
     # Generate API Token
     access_token = create_access_token(data={"sub": identifier, "role": role})
+    
+    # Set cookie
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {access_token}",
+        httponly=True,
+        secure=True,     # Only send cookie over HTTPS
+        samesite="none", # Required for cross-origin requests
+        max_age=1800     # 30 minutes
+    )
+    
     return {"access_token": access_token, "token_type": "bearer", "role": role}
+
+@auth_router.post("/logout")
+async def logout_user(response: Response):
+    response.delete_cookie(
+        "access_token",
+        httponly=True,
+        secure=True,
+        samesite="none"
+    )
+    return {"message": "Logged out successfully"}
