@@ -3,6 +3,7 @@ from database import get_db, Base, engine
 from fastapi.middleware.cors import CORSMiddleware
 from auth import auth_router
 from filter_service import filter_router
+from ai_service import ai_router
 
 app = FastAPI()
 app.add_middleware(
@@ -16,6 +17,7 @@ app.add_middleware(
 @app.get("/")
 def read_root():
     return {"Hello": "World"}
+
 @app.on_event("startup")
 async def create_tables():
     async with engine.begin() as conn:
@@ -23,3 +25,4 @@ async def create_tables():
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(filter_router, prefix="/filter", tags=["filter"])
+app.include_router(ai_router, prefix="/ai", tags=["ai"])
