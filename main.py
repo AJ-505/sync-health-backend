@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from database import get_db, Base, engine
 from fastapi.middleware.cors import CORSMiddleware
 from auth import auth_router
+from filter_service import filter_router
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -19,4 +21,5 @@ async def create_tables():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-app.include_router(auth_router, prefix="/auth")
+app.include_router(auth_router, prefix="/auth", tags=["auth"])
+app.include_router(filter_router, prefix="/filter", tags=["filter"])
