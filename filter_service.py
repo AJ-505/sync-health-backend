@@ -83,3 +83,24 @@ async def filter_employees(
             for emp in employees
         ]
     }
+
+@filter_router.get("/all")
+async def get_all_employees(
+    db: AsyncSession = Depends(get_db),
+    user_and_role: tuple = Depends(get_current_user)
+):
+    current_user, role = user_and_role
+    
+    # Check if the user is an HR
+    if role != "hr":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only HR users can access this endpoint")
+        
+    query = select(Employee).where(Employee.org_id == current_user.org_id)
+    result = await db.execute(query)
+    employees = result.scalars().all()
+    
+    return {
+        "count": len(employees),
+        "employees": employees
+    }
+

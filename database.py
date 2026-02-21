@@ -13,7 +13,7 @@ if DATABASE_URL is None:
         "Please ensure it is set on the Render dashboard."
     )
 
-engine = create_async_engine(DATABASE_URL, echo=True)
+engine = create_async_engine(DATABASE_URL, echo=True, pool_pre_ping=True)
 SessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 Base = declarative_base()
 
