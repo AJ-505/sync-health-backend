@@ -13,12 +13,10 @@ from security import get_current_user
 
 ai_router = APIRouter()
 
-# ── Gemini config ────────────────────────────────────────────────────────────
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent?key={key}"
-)
+# ── OpenRouter config ────────────────────────────────────────────────────────
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL = "openrouter/free"
 
 # ── Request body ─────────────────────────────────────────────────────────────
 class AnalyseRequest(BaseModel):
@@ -27,47 +25,47 @@ class AnalyseRequest(BaseModel):
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 def _build_payload(system_instruction: str, user_message: str) -> dict:
-    """Build a Gemini generateContent request body."""
+    """Build an OpenAI-compatible chat completions request body."""
     return {
-        "system_instruction": {
-            "parts": [{"text": system_instruction}]
-        },
-        "contents": [
-            {"role": "user", "parts": [{"text": user_message}]}
+        "model": OPENROUTER_MODEL,
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {"role": "user",   "content": user_message},
         ],
-        "generationConfig": {
-            "temperature": 0.0,
-        },
+        "temperature": 0.0,
     }
 
 
-async def _call_gemini(system_instruction: str, user_message: str) -> str:
-    """Call the Gemini API and return the raw text response."""
-    if not GEMINI_API_KEY:
+async def _call_ai(system_instruction: str, user_message: str) -> str:
+    """Call the OpenRouter API and return the raw text response."""
+    if not OPENROUTER_API_KEY:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="GEMINI_API_KEY is not configured in the environment.",
+            detail="OPENROUTER_API_KEY is not configured in the environment.",
         )
 
-    url = GEMINI_URL.format(key=GEMINI_API_KEY)
     payload = _build_payload(system_instruction, user_message)
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(url, json=payload)
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(OPENROUTER_URL, json=payload, headers=headers)
 
     if response.status_code != 200:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Gemini API error {response.status_code}: {response.text}",
+            detail=f"OpenRouter API error {response.status_code}: {response.text}",
         )
 
     data = response.json()
     try:
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError) as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Unexpected Gemini response structure: {exc}",
+            detail=f"Unexpected OpenRouter response structure: {exc}",
         )
 
 
@@ -164,7 +162,7 @@ async def analyse(
         )
 
     # ── Stage 1: Classification ───────────────────────────────────────────────
-    classification = await _call_gemini(
+    classification = await _call_ai(
         system_instruction=CLASSIFIER_SYSTEM_PROMPT,
         user_message=body.prompt,
     )
@@ -195,7 +193,7 @@ async def analyse(
     # ── Stage 3: Risk scoring ─────────────────────────────────────────────────
     scoring_input = json.dumps(employee_array, ensure_ascii=False)
 
-    raw_scores = await _call_gemini(
+    raw_scores = await _call_ai(
         system_instruction=RISK_SCORING_SYSTEM_PROMPT,
         user_message=scoring_input,
     )
