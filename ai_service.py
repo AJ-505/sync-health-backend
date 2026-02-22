@@ -13,11 +13,11 @@ from security import get_current_user
 
 ai_router = APIRouter()
 
-# ── Gemini config ───────────────────────────────────────────────────────────
+# ── Gemini config ────────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-3-flash-preview:generateContent?key={key}"
+    "gemini-2.0-flash:generateContent?key={key}"
 )
 
 # ── Request body ─────────────────────────────────────────────────────────────
@@ -54,7 +54,6 @@ async def _call_ai(system_instruction: str, user_message: str) -> str:
 
     async with httpx.AsyncClient(timeout=None) as client:
         response = await client.post(url, json=payload)
-        
 
     if response.status_code != 200:
         raise HTTPException(
@@ -72,7 +71,7 @@ async def _call_ai(system_instruction: str, user_message: str) -> str:
         )
 
 
-# ── System prompts ────────────────────────────────────────────────────────────
+# ── System prompts ─────────────────────────────────────────────────────────────
 CLASSIFIER_SYSTEM_PROMPT = """\
 You are a strict security and classification router for an employee health database. \
 Your ONLY job is to evaluate the user's query and determine if it is strictly related \
@@ -92,62 +91,64 @@ I'm sorry I cannot help you with that
 Do not include any other text, markdown, punctuation, or explanations. \
 Only output the exact string based on the rules above."""
 
+# FIX 1: Prompt now enforces a realistic score distribution and forbids inflation.
+# FIX 2: The user's query is injected as CONDITION: so the model scores for the
+#         exact condition asked, not one it invents on its own.
 RISK_SCORING_SYSTEM_PROMPT = """\
-You are a health risk scoring engine.
+You are a precise health risk scoring engine. You score employees for a SPECIFIC \
+condition stated at the top of the user message.
 
-You will receive a JSON array of employee objects in this format:
-
-[
-  {
-    "employee_id": "CS-0005",
-    "summary": "..."
-  }
-]
+The user message will always begin with:
+CONDITION: <exact condition to score for>
+DATA:
+[JSON array of employees]
 
 TASK:
-For EACH employee in the input array, calculate a risk_probability between 0.00 and 1.00 \
-based strictly on the health indicators in the "summary" field.
+Evaluate each employee's susceptibility to the specified CONDITION only. \
+Focus exclusively on health factors in their summary that are relevant to that condition. \
+Ignore unrelated indicators entirely.
 
-Use common-sense health reasoning. Higher BP, high A1c, high LDL, smoking, high stress, \
-low sleep, shift work etc. should increase risk. Healthier indicators reduce risk.
+SCORING DISCIPLINE — THIS IS MANDATORY:
+- You must produce a realistic, spread-out distribution of scores.
+- Most employees should score between 0.15 and 0.55 for any given condition.
+- A score above 0.65 requires the employee to have MULTIPLE strong risk factors \
+that are DIRECTLY and SPECIFICALLY linked to the condition being asked about.
+- A score above 0.80 requires overwhelming, specific, undeniable evidence from \
+their summary — not just generic poor health.
+- DO NOT give everyone high risk. DO NOT inflate scores.
+- If only 3 out of 50 employees genuinely have meaningful susceptibility, only 3 appear in the output.
+- Scores across employees MUST differ meaningfully. \
+Giving many employees the same or near-identical scores is a critical error.
 
-Everyone must receive a risk score.
-the condition typed in the user prompt is the condition you are scoring for (e.g. "flu", "heart disease risk", "diabetes risk").
-
-OUTPUT RULES (VERY IMPORTANT):
-
-1. Output STRICT JSON only.
-2. No markdown.
-3. No explanations.
-4. No extra keys.
-5. Take this structure as an example:
+OUTPUT RULES:
+1. Output STRICT JSON only. No markdown. No explanations. No extra keys.
+2. Use this exact structure:
 
 {
-  "condition": "flu",
+  "condition": "<condition from the CONDITION line, verbatim>",
   "scored_employees": [
     {
       "employee_id": "CS-0005",
-      "risk_probability": 0.62,
-      "confidence": "low|medium|high",
-      "evidence": ["factor1", "factor2", "factor3"]
+      "risk_probability": 0.74,
+      "confidence": "high",
+      "evidence": ["smokes 6 cigarettes per day", "stress level 9/10", "sleep 5.2h avg"]
     }
   ]
 }
 
-6. Include employees with a risk of 0.7 or higher from the input.
-7. risk_probability must be between 0 and 1 with exactly 2 decimal places.
-8. confidence:
-   - high → multiple strong risk indicators
-   - medium → some indicators
-   - low → minimal risk indicators
-9. evidence must reference phrases found in the summary. Do not invent information.
-10. Sort employees by risk_probability in descending order.
-11.Calculate the risk score for all employees. However, your final scored_employees 
-JSON array MUST ONLY include employees who have a risk_probability strictly greater than 0.65. 
-Do not output anything for employees who fall below this threshold.
-"""
+3. scored_employees MUST ONLY contain employees with risk_probability strictly above 0.65.
+4. If no employees exceed 0.65, return scored_employees as an empty array [].
+5. risk_probability must be a float between 0.00 and 1.00 with exactly 2 decimal places.
+6. confidence levels:
+   - "high"   → 3 or more strong, directly relevant risk factors
+   - "medium" → 1–2 relevant indicators
+   - "low"    → borderline, minimal direct evidence
+7. Each evidence item must be a short phrase quoted or closely paraphrased from the summary. \
+Do NOT invent or assume any information not stated in the summary.
+8. Sort scored_employees by risk_probability descending."""
 
-# ── Endpoint ──────────────────────────────────────────────────────────────────
+
+# ── Endpoint ───────────────────────────────────────────────────────────────────
 @ai_router.post("/analyse")
 async def analyse(
     body: AnalyseRequest,
@@ -157,7 +158,8 @@ async def analyse(
     """
     Two-stage Gemini pipeline:
       1. Classify whether the user's prompt is health-related.
-      2. If yes, fetch the employee summaries for the HR's org and return risk scores.
+      2. If yes, fetch employee summaries for the HR's org and return risk scores
+         for the specific condition the user asked about.
     """
     current_user, role = user_and_role
 
@@ -175,14 +177,13 @@ async def analyse(
     )
 
     if classification != "Yes":
-        # Return the refusal as-is to the frontend
         return {"result": classification}
 
     # ── Stage 2: Fetch employee id + summary for the org ─────────────────────
     result = await db.execute(
         select(Employee.employee_id, Employee.summary).where(
             Employee.org_id == current_user.org_id
-        ).limit(10)
+        )
     )
     rows = result.all()
 
@@ -198,7 +199,12 @@ async def analyse(
     ]
 
     # ── Stage 3: Risk scoring ─────────────────────────────────────────────────
-    scoring_input = json.dumps(employee_array, ensure_ascii=False)
+    # Prefix the user's exact query as CONDITION so the model scores specifically for it
+    scoring_input = (
+        f"CONDITION: {body.prompt}\n"
+        f"DATA:\n"
+        f"{json.dumps(employee_array, ensure_ascii=False)}"
+    )
 
     raw_scores = await _call_ai(
         system_instruction=RISK_SCORING_SYSTEM_PROMPT,
@@ -208,7 +214,13 @@ async def analyse(
     # Parse the JSON the model returns
     try:
         # Strip any accidental markdown fences the model may include
-        clean = raw_scores.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        clean = (
+            raw_scores.strip()
+            .removeprefix("```json")
+            .removeprefix("```")
+            .removesuffix("```")
+            .strip()
+        )
         scores = json.loads(clean)
     except json.JSONDecodeError as exc:
         raise HTTPException(
