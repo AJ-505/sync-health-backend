@@ -183,7 +183,7 @@ async def analyse(
     result = await db.execute(
         select(Employee.employee_id, Employee.summary).where(
             Employee.org_id == current_user.org_id
-        ).limit(20)
+        ).limit(10)
     )
     rows = result.all()
 
