@@ -17,7 +17,7 @@ ai_router = APIRouter()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.5-flash:generateContent?key={key}"
+    "gemini-3-flash-preview:generateContent?key={key}"
 )
 
 # ── Request body ─────────────────────────────────────────────────────────────
@@ -52,8 +52,9 @@ async def _call_ai(system_instruction: str, user_message: str) -> str:
     url = GEMINI_URL.format(key=GEMINI_API_KEY)
     payload = _build_payload(system_instruction, user_message)
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=None) as client:
         response = await client.post(url, json=payload)
+        
 
     if response.status_code != 200:
         raise HTTPException(
@@ -111,6 +112,7 @@ Use common-sense health reasoning. Higher BP, high A1c, high LDL, smoking, high 
 low sleep, shift work etc. should increase risk. Healthier indicators reduce risk.
 
 Everyone must receive a risk score.
+the condition typed in the user prompt is the condition you are scoring for (e.g. "flu", "heart disease risk", "diabetes risk").
 
 OUTPUT RULES (VERY IMPORTANT):
 
@@ -118,10 +120,10 @@ OUTPUT RULES (VERY IMPORTANT):
 2. No markdown.
 3. No explanations.
 4. No extra keys.
-5. Follow this EXACT structure:
+5. Take this structure as an example:
 
 {
-  "condition": "general_health_risk",
+  "condition": "flu",
   "scored_employees": [
     {
       "employee_id": "CS-0005",
@@ -132,15 +134,18 @@ OUTPUT RULES (VERY IMPORTANT):
   ]
 }
 
-6. Include ALL employees from the input.
+6. Include employees with a risk of 0.7 or higher from the input.
 7. risk_probability must be between 0 and 1 with exactly 2 decimal places.
 8. confidence:
    - high → multiple strong risk indicators
    - medium → some indicators
    - low → minimal risk indicators
 9. evidence must reference phrases found in the summary. Do not invent information.
-10. Sort employees by risk_probability in descending order."""
-
+10. Sort employees by risk_probability in descending order.
+11.Calculate the risk score for all employees. However, your final scored_employees 
+JSON array MUST ONLY include employees who have a risk_probability strictly greater than 0.65. 
+Do not output anything for employees who fall below this threshold.
+"""
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 @ai_router.post("/analyse")
@@ -152,7 +157,7 @@ async def analyse(
     """
     Two-stage Gemini pipeline:
       1. Classify whether the user's prompt is health-related.
-      2. If yes, fetch all employee summaries for the HR's org and return risk scores.
+      2. If yes, fetch the employee summaries for the HR's org and return risk scores.
     """
     current_user, role = user_and_role
 
@@ -177,7 +182,7 @@ async def analyse(
     result = await db.execute(
         select(Employee.employee_id, Employee.summary).where(
             Employee.org_id == current_user.org_id
-        )
+        ).limit(10)
     )
     rows = result.all()
 
